@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo-statefulset
+spec:
+  serviceName: "mongo"
+  # spec.serviceName: "mongo" 只是一个名字，StatefulSet 用它拼稳定域名：
+  # 所以, 我们可以在 mongo-statefulset 中使用这个稳定域名来访问 mongo
+  # mongo-statefulset-0.mongo.<命名空间>.svc.cluster.local
+  # mongo-statefulset-1.mongo.<命名空间>.svc.cluster.local
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mongo
+  template: # 这个 template 就是设置 pod 的模板, statefulset 维护的 pod 都是基于这个模板创建的
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7.0
+          command: ["/bin/bash", "-c"]
+          args:
+            - >
+              docker-entrypoint.sh mongod --wiredTigerCacheSizeGB ${wiredTigerCacheSizeGB} --auth &
+              until mongosh -u ${MONGO_INITDB_ROOT_USERNAME} -p ${MONGO_INITDB_ROOT_PASSWORD} --authenticationDatabase admin --eval "db.runCommand({ ping: 1 })" &>/dev/null; do
+                echo "Waiting for MongoDB to start...";
+                sleep 1;
+              done &&
+              mongosh -u ${MONGO_INITDB_ROOT_USERNAME} -p ${MONGO_INITDB_ROOT_PASSWORD} --authenticationDatabase admin --eval "
+              db = db.getSiblingDB(\"${MONGO_INITDB_DATABASE}\");
+              if (!db.getUser(\"${MONGO_OPENIM_USERNAME}\")) {
+                db.createUser({
+                  user: \"${MONGO_OPENIM_USERNAME}\",
+                  pwd: \"${MONGO_OPENIM_PASSWORD}\",
+                  roles: [{role: \"readWrite\", db: \"${MONGO_INITDB_DATABASE}\"}]
+                });
+                print(\"User created successfully: \");
+                print(\"Username: ${MONGO_OPENIM_USERNAME}\");
+                print(\"Password: ${MONGO_OPENIM_PASSWORD}\");
+                print(\"Database: ${MONGO_INITDB_DATABASE}\");
+              } else {
+                print(\"User already exists in database: ${MONGO_INITDB_DATABASE}, Username: ${MONGO_OPENIM_USERNAME}\");
+              }
+              " &&
+              tail -f /dev/null
+          ports:
+            - containerPort: 27017
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: openim-mongo-init-secret
+                  key: mongo_initdb_root_username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openim-mongo-init-secret
+                  key: mongo_initdb_root_password
+            - name: MONGO_INITDB_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: openim-mongo-init-secret
+                  key: mongo_initdb_database
+            - name: MONGO_OPENIM_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: openim-mongo-init-secret
+                  key: mongo_openim_username
+            - name: MONGO_OPENIM_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: openim-mongo-init-secret
+                  key: mongo_openim_password
+            - name: TZ
+              value: "Asia/Shanghai"
+            - name: wiredTigerCacheSizeGB
+              value: "1"
+          volumeMounts:
+            - name: mongo-storage # 将 pvc 挂载到 pod 中, 这样 pod 重启后, 数据不会丢失, 两个 pod 的 data 目录是共享的
+              mountPath: /data/db # 这个就是 mongo 的数据目录
+              # 启动命令没有另写 --dbpath，WiredTiger 的数据文件就写在这个挂载点里。
+
+      volumes:
+        - name: mongo-storage
+          persistentVolumeClaim:
+            claimName: mongo-pvc
+
+      # 每个 Pod 各一块盘要写成 volumeClaimTemplates。
+      # 控制器会为每个序号单独建 PVC，例如 mongo-data-mongo-statefulset-0、mongo-data-mongo-statefulset-1，
+      # 每张 PVC 再各绑一块 PV。这份文件没有这个字段。
+
+---
+# PVC 是用来申请创建 PV 的, 当我们没有配置 StorageClass 的时候
+# 集群里有默认 StorageClass 时，控制器会按这张申请新建一块 PV 并绑上；没有的话，这张 PVC 会一直停在 Pending。
+apiVersion: v1 # 定义一个 pvc, 用来持久化存储 mongo 的数据
+kind: PersistentVolumeClaim
+metadata: # 资源的元数据, 包括 name, labels, annotations 等
+  name: mongo-pvc
+spec: # 资源的规格, 包括 accessModes, resources, selector 等
+  accessModes:
+    - ReadWriteOnce
+    # ReadWriteOnce 只允许这块盘在一个节点上读写挂载。两个 Pod 被分到不同节点时，第二个 Pod 往往挂不上盘，一直起不来。
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: v1 # 定义一个 k8s API Resource Secret, 用来存储 mongo 的 root 用户名和密码
+kind: Secret
+metadata:
+  name: openim-mongo-init-secret
+type: Opaque # 表示这个 secret 是 opaque 类型的, 也就是不透明的, 不是 key-value 类型的
+data:
+  mongo_initdb_root_username: cm9vdA== # base64 for "root"
+  mongo_initdb_root_password: b3BlbklNMTIz # base64 for "openIM123"
+  mongo_initdb_database: b3BlbmltX3Yz # base64 for "openim_v3"
+  mongo_openim_username: b3BlbklN # base64 for "openIM"
+  mongo_openim_password: b3BlbklNMTIz # base64 for "openIM123"
