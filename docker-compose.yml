@@ -80,7 +80,9 @@ services:
       - "12380:2380"
     environment:
       - ETCD_NAME=s1
-      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_DATA_DIR=/bitnami/etcd/data
+      # No authentication requires a trusted, isolated network.
+      - ALLOW_NONE_AUTHENTICATION=yes
       - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
       - ETCD_ADVERTISE_CLIENT_URLS=http://0.0.0.0:2379
       - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
@@ -108,6 +110,7 @@ services:
       KAFKA_CFG_NODE_ID: 0
       # Defines the roles this Kafka node plays: broker, controller, or both
       KAFKA_CFG_PROCESS_ROLES: controller,broker
+      # 同时担任 KRaft 的 controller 以及 对外收发消息的 broker
       # Specifies which nodes are controller nodes for quorum voting.
       # The syntax follows the KRaft mode (no ZooKeeper): node.id@host:port
       # The controller listener endpoint here is kafka:9093
@@ -165,6 +168,7 @@ services:
 
   minio:
     image: "${MINIO_IMAGE}"
+    user: "0:0"
     ports:
       - "10005:9000"
       - "19090:9090"
