@@ -77,7 +77,9 @@ func BuildProducerConfig(conf Config) (*sarama.Config, error) {
 }
 
 func NewProducer(conf *sarama.Config, addr []string) (sarama.SyncProducer, error) {
+	//
 	producer, err := sarama.NewSyncProducer(addr, conf)
+
 	if err != nil {
 		return nil, errs.WrapMsg(err, "NewSyncProducer failed", "addr", addr, "conf", *conf)
 	}
