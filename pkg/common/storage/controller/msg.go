@@ -102,11 +102,20 @@ type CommonMsgDatabase interface {
 	GetLastMessage(ctx context.Context, conversationIDS []string, userID string) (map[string]*sdkws.MsgData, error)
 }
 
+// database.Msg 是数据库层面的接口
+// cache.MsgCache 是 Cache 层面的接口
+// cache.SeqUser
+// cache.SeqConversationCache
+// 都是 缓存方面的接口, 不过负责不同类型数据的缓存
 func NewCommonMsgDatabase(msgDocModel database.Msg, msg cache.MsgCache, seqUser cache.SeqUser, seqConversation cache.SeqConversationCache, kafkaConf *config.Kafka) (CommonMsgDatabase, error) {
 	conf, err := kafka.BuildProducerConfig(*kafkaConf.Build())
 	if err != nil {
 		return nil, err
 	}
+	// 在这里, 还要求传入进来 kafka config, 创建 kafka producer
+	// msg rpc 服务这里, 只会用到 ToRedis Topic?
+	// 就算是在 controller 层这里, msg rpc 服务会用到 controller 层的方法
+	// 
 	producerToRedis, err := kafka.NewKafkaProducer(conf, kafkaConf.Address, kafkaConf.ToRedisTopic)
 	if err != nil {
 		return nil, err
@@ -116,20 +125,28 @@ func NewCommonMsgDatabase(msgDocModel database.Msg, msg cache.MsgCache, seqUser 
 		msgCache:        msg,
 		seqUser:         seqUser,
 		seqConversation: seqConversation,
-		producer:        producerToRedis,
+		producer:        producerToRedis, // CommonMsgDatabase 是 controller 层的接口
+		// CommonMsgDatabase 的
 	}, nil
 }
 
-type commonMsgDatabase struct {
+type commonMsgDatabase struct { // controller.CommonMsgDatabase 的实现
 	msgDocDatabase  database.Msg
-	msgTable        model.MsgDocModel
+	msgTable        model.MsgDocModel // 为的是使用上面绑定的方法, nil 就行
 	msgCache        cache.MsgCache
 	seqConversation cache.SeqConversationCache
 	seqUser         cache.SeqUser
 	producer        *kafka.Producer
 }
 
+// 是 msg 业务的 controller 层面, 在这里处理业务的
+// 用 kafka producer 实例发送 消息到 MQ 中的一个 Topic, producer 对应一个 kafka topic ?
+// controller 层 CommonMsgDatabase (内持 database.Msg 接口),
+// sdkws.MsgData 结构体实现了 proto.Message 接口
 func (db *commonMsgDatabase) MsgToMQ(ctx context.Context, key string, msg2mq *sdkws.MsgData) error {
+	// 这个是 controller 层的方法, 调用 commonMsgDatabase 的 producer 的 SendMessage
+	// kafka.Producer.SendMessage 方法, 发送
+	// 问题来了, key 我们知道可以计算出来, 但是 sdkws.MsgData 是什么
 	_, _, err := db.producer.SendMessage(ctx, key, msg2mq)
 	return err
 }

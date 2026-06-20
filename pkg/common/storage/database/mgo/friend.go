@@ -16,10 +16,11 @@ package mgo
 
 import (
 	"context"
+	"time"
+
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"time"
 
 	"github.com/openimsdk/tools/db/mongoutil"
 	"github.com/openimsdk/tools/db/pagination"
@@ -29,6 +30,7 @@ import (
 )
 
 // FriendMgo implements Friend using MongoDB as the storage backend.
+// 是 pkg/common/storage/database 中 friend.go 中的 Friend 接口的实现
 type FriendMgo struct {
 	coll  *mongo.Collection
 	owner database.VersionLog
@@ -36,8 +38,12 @@ type FriendMgo struct {
 
 // NewFriendMongo creates a new instance of FriendMgo with the provided MongoDB database.
 func NewFriendMongo(db *mongo.Database) (database.Friend, error) {
+	// 通过 获取的 mongo.Database 通过 pkg/common/storage/database 包下的常量获取名字
 	coll := db.Collection(database.FriendName)
+	// 索引是在 Go 进程启动时建的。NewFriendMongo 拿到集合句柄后，调用驱动的 CreateOne，驱动向 MongoDB 发送 createIndexes 命令。
+	// 这和在 mongosh 里手工建索引是同一条命令，只是发出命令的地方放在了服务启动代码里。
 	_, err := coll.Indexes().CreateOne(context.Background(), mongo.IndexModel{
+		// bson 是 MongoDB 存数据和传命令用的二进制格式，包名是 go.mongodb.org/mongo-driver/bson
 		Keys: bson.D{
 			{Key: "owner_user_id", Value: 1},
 			{Key: "friend_user_id", Value: 1},
@@ -133,6 +139,7 @@ func (f *FriendMgo) fillTime(friends ...*model.Friend) {
 }
 
 func (f *FriendMgo) findOne(ctx context.Context, filter any) (*model.Friend, error) {
+	// 因为 FindOne 对于很多业务来说, 逻辑相通
 	friend, err := mongoutil.FindOne[*model.Friend](ctx, f.coll, filter)
 	if err != nil {
 		return nil, err

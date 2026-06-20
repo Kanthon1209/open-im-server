@@ -64,6 +64,7 @@ func (u *UserMgo) Find(ctx context.Context, userIDs []string) (users []*model.Us
 }
 
 func (u *UserMgo) Take(ctx context.Context, userID string) (user *model.User, err error) {
+	// 从这个 collection 中 用 filter 拿出来
 	return mongoutil.FindOne[*model.User](ctx, u.coll, bson.M{"user_id": userID})
 }
 

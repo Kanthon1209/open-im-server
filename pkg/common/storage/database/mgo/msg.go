@@ -41,18 +41,33 @@ type MsgMgo struct {
 }
 
 func (m *MsgMgo) Create(ctx context.Context, msg *model.MsgDocModel) error {
+	// 传入一个 slice, slice 中每一个都是 model.MsgDocModel 指针, 8Byte, 64bit
+	//
 	return mongoutil.InsertMany(ctx, m.coll, []*model.MsgDocModel{msg})
 }
 
 func (m *MsgMgo) UpdateMsg(ctx context.Context, docID string, index int64, key string, value any) (*mongo.UpdateResult, error) {
 	var field string
+	// docID 是文档编号，例如 si_userA_userB:0。
+	// index 是 msgs 数组的下标，由消息序号对 100 取余得到。
+	// 表明的是 100 条消息一个 block 中, 要 update 的消息的下标是
+	// key 决定改这一格的哪一层：
 	if key == "" {
 		field = fmt.Sprintf("msgs.%d", index)
+		// 修改的是这个 格子 中的整个内容
 	} else {
 		field = fmt.Sprintf("msgs.%d.%s", index, key)
+		// 表示要对这个格子的哪一个字段进行修改
 	}
-	filter := bson.M{"doc_id": docID}
+	filter := bson.M{"doc_id": docID} // docID 带有 block index
 	update := bson.M{"$set": bson.M{field: value}}
+	// filter 和 update 被编成一条 BSON 命令，经连接发给 mongod。
+	// 服务器按 filter 找到文档，再按 update 修改它。
+
+	// mongod 收到后按命令名分发。
+	// q 用来查文档，这里的 doc_id 能用上唯一索引。
+	// 找到后执行 u 里的 $set，把 msgs 数组第 3 个元素的 msg 换成新值。
+	// 响应里带回匹配条数和实际修改条数，驱动把它放进 UpdateResult
 	return mongoutil.UpdateOneResult(ctx, m.coll, filter, update)
 }
 

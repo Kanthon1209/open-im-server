@@ -1,5 +1,6 @@
 package database
 
+// 这里配置了各个 Collection (如果是 Mongo 实现的话) 的名字
 const (
 	BlackName               = "black"
 	ConversationName        = "conversation"

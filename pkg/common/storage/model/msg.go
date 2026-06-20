@@ -33,7 +33,7 @@ var ErrMsgListNotExist = errs.New("user not have msg in mongoDB")
 
 type MsgDocModel struct {
 	DocID string          `bson:"doc_id"`
-	Msg   []*MsgInfoModel `bson:"msgs"`
+	Msg   []*MsgInfoModel `bson:"msgs"` // 虽然字段名叫 Msg, 但是映射到 数据库的 msgs 字段
 }
 
 type RevokeModel struct {

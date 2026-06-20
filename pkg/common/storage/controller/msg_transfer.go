@@ -19,6 +19,10 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+// msgtransfer 这里的 controller 层
+// 有接口定义, 还提供一套实现
+// msgtransfer 的 controller 层提供将消息入到 ToPush Topic MQ 的 方法
+// 将一批信息入到 ToMongo Topic 的方法
 type MsgTransferDatabase interface {
 	// BatchInsertChat2DB inserts a batch of messages into the database for a specific conversation.
 	BatchInsertChat2DB(ctx context.Context, conversationID string, msgs []*sdkws.MsgData, currentMaxSeq int64) error
@@ -42,6 +46,7 @@ func NewMsgTransferDatabase(msgDocModel database.Msg, msg cache.MsgCache, seqUse
 	if err != nil {
 		return nil, err
 	}
+	// 创建 Producer
 	producerToMongo, err := kafka.NewKafkaProducer(conf, kafkaConf.Address, kafkaConf.ToMongoTopic)
 	if err != nil {
 		return nil, err
@@ -61,12 +66,12 @@ func NewMsgTransferDatabase(msgDocModel database.Msg, msg cache.MsgCache, seqUse
 }
 
 type msgTransferDatabase struct {
-	msgDocDatabase  database.Msg
-	msgTable        model.MsgDocModel
+	msgDocDatabase  database.Msg      // Database 层面的接口
+	msgTable        model.MsgDocModel // 可能主要是为了用上面的方法, 当静态方法用可能
 	msgCache        cache.MsgCache
 	seqConversation cache.SeqConversationCache
 	seqUser         cache.SeqUser
-	producerToMongo *kafka.Producer
+	producerToMongo *kafka.Producer // controller 层的 database 还持有到 ToMongo 和 ToPush 的两个
 	producerToPush  *kafka.Producer
 }
 
@@ -76,6 +81,7 @@ func (db *msgTransferDatabase) BatchInsertChat2DB(ctx context.Context, conversat
 	}
 	msgs := make([]any, len(msgList))
 	seqs := make([]int64, len(msgList))
+	// 落库的时候, seqs 的 第 i 个, 设置为 第 i 个 msg.Seq
 	for i, msg := range msgList {
 		if msg == nil {
 			continue
@@ -118,6 +124,7 @@ func (db *msgTransferDatabase) BatchInsertChat2DB(ctx context.Context, conversat
 			Ex:               msg.Ex,
 		}
 	}
+	// 这里用
 	if err := db.BatchInsertBlock(ctx, conversationID, msgs, updateKeyMsg, msgList[0].Seq); err != nil {
 		return err
 	}
@@ -129,6 +136,7 @@ func (db *msgTransferDatabase) BatchInsertBlock(ctx context.Context, conversatio
 	if len(fields) == 0 {
 		return nil
 	}
+	// 用到 msgTable
 	num := db.msgTable.GetSingleGocMsgNum()
 	// num = 100
 	for i, field := range fields { // Check the type of the field
