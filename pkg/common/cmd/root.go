@@ -74,12 +74,16 @@ func NewRootCmd(processName string, opts ...func(*CmdOpts)) *RootCmd {
 	cmd := cobra.Command{
 		Use:  "Start openIM application",
 		Long: fmt.Sprintf(`Start %s `, processName),
+		// 将配置映射的逻辑放到这里
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			return rootCmd.persistentPreRun(cmd, opts...)
 		},
+		// 这个回调函数会读取 cobra.Command 的 命令解析结果
+		// 并去解析配置文件, 将配置文件中的内容绑定到 configMap 映射的结构体上
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
+	// 设置 cobra.Command 要解析的命令
 	cmd.Flags().StringP(FlagConf, "c", "", "path of config directory")
 	cmd.Flags().IntP(FlagTransferIndex, "i", 0, "process startup sequence number")
 
@@ -88,7 +92,10 @@ func NewRootCmd(processName string, opts ...func(*CmdOpts)) *RootCmd {
 }
 
 func (r *RootCmd) persistentPreRun(cmd *cobra.Command, opts ...func(*CmdOpts)) error {
-	cmdOpts := r.applyOptions(opts...)
+	cmdOpts := r.applyOptions(opts...) // 对 configMap 进行赋值
+
+	// 在这里, 从命令中解析出来配置文件路径, 并结合 configMap 将配置文件中的配置加载到 结构体中
+	// 给后面将 config 放入 Start 函数中打好基础
 	if err := r.initializeConfiguration(cmd, cmdOpts); err != nil {
 		return err
 	}
@@ -102,11 +109,13 @@ func (r *RootCmd) persistentPreRun(cmd *cobra.Command, opts ...func(*CmdOpts)) e
 
 func (r *RootCmd) initializeConfiguration(cmd *cobra.Command, opts *CmdOpts) error {
 	configDirectory, _, err := r.getFlag(cmd)
+	// 从命令中获取解析的配置文件目录路径
 	if err != nil {
 		return err
 	}
 	// Load common configuration file
 	//opts.configMap[ShareFileName] = StructEnvPrefix{EnvPrefix: shareEnvPrefix, ConfigStruct: &r.share}
+	// 对应用的配置中的 configMap, 进行遍历, 读取配置文件中的内容, 映射到 结构体
 	for configFileName, configStruct := range opts.configMap {
 		err := config.LoadConfig(filepath.Join(configDirectory, configFileName),
 			ConfigEnvPrefixMap[configFileName], configStruct)
@@ -121,6 +130,7 @@ func (r *RootCmd) initializeConfiguration(cmd *cobra.Command, opts *CmdOpts) err
 
 func (r *RootCmd) applyOptions(opts ...func(*CmdOpts)) *CmdOpts {
 	cmdOpts := defaultCmdOpts()
+	// 实际上这里只有一个 opt 对 configMap 进行赋值
 	for _, opt := range opts {
 		opt(cmdOpts)
 	}

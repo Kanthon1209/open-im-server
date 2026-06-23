@@ -31,13 +31,17 @@ import (
 // NewDiscoveryRegister creates a new service discovery and registry client based on the provided environment type.
 func NewDiscoveryRegister(discovery *config.Discovery, share *config.Share, watchNames []string) (discovery.SvcDiscoveryRegistry, error) {
 	runtimeEnvironment := runtimeenv.RuntimeEnvironment()
+
 	discoveryType := discovery.Enable
+
+	// 如果 config.Discovery 中的 Enable 字段是空的, 并且 runtime 环境变量中设置了 k8s
 	if discoveryType == "" && runtimeEnvironment == config.KUBERNETES {
 		discoveryType = config.KUBERNETES
 	}
 	if discoveryType == config.KUBERNETES && runtimeEnvironment != config.KUBERNETES {
 		return nil, errs.New("unsupported discovery type", "type", discoveryType).Wrap()
 	}
+	// 根据 配置文件中 Enable 字段的配置内容, 选择一个服务发现的方式
 	switch discoveryType {
 	case config.KUBERNETES:
 		for i := range watchNames {

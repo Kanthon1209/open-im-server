@@ -75,6 +75,7 @@ type Mongo struct {
 	MaxRetry    int      `mapstructure:"maxRetry"`
 }
 type Kafka struct {
+	// 为什么 Kafka 配置有两个地方, 一个是在这里, 知道是和 配置文件进行绑定用的
 	Username           string   `mapstructure:"username"`
 	Password           string   `mapstructure:"password"`
 	ProducerAck        string   `mapstructure:"producerAck"`
@@ -502,6 +503,14 @@ type Etcd struct {
 	Password      string   `mapstructure:"password"`
 }
 
+// 由我们包中的 config.Mongo 结构体上绑定的 Build() 方法 Build 出来一个
+// mongouitl 包中定义的 Config 结构体
+// 相比一下, mongoutil.Config 中的配置结构体还多了几个字段
+//
+// MongoMode      string // "replicaSet" or "standalone"
+// ReplicaSet     *ReplicaSetConfig
+// ReadPreference *ReadPrefConfig
+// WriteConcern   *WriteConcernConfig
 func (m *Mongo) Build() *mongoutil.Config {
 	return &mongoutil.Config{
 		Uri:         m.URI,
@@ -528,6 +537,11 @@ func (r *Redis) Build() *redisutil.Config {
 }
 
 func (k *Kafka) Build() *kafka.Config {
+	// 通过从配置文件绑定的 Kafka 配置结构体
+	// Build 得到一个 pkg/common/storage/kafka 包下的 kafka.Config
+	// kafka.Config 需要在 BuildConsumerGroupConfig 和 BuildProducerConfig 中使用到
+	// ConsumerGroupConfig 和 ProducerConfig 又在 NewMConsumerGroup 和 NewProducer 中使用
+	// 用来创建 Kafka 的 消费者组 和 生产者
 	return &kafka.Config{
 		Username:     k.Username,
 		Password:     k.Password,
