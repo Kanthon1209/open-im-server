@@ -16,13 +16,14 @@ package msg
 
 import (
 	"context"
+	"math/rand"
+	"strconv"
+	"time"
+
 	"github.com/openimsdk/open-im-server/v3/pkg/common/servererrs"
 	"github.com/openimsdk/tools/utils/datautil"
 	"github.com/openimsdk/tools/utils/encrypt"
 	"github.com/openimsdk/tools/utils/timeutil"
-	"math/rand"
-	"strconv"
-	"time"
 
 	"github.com/openimsdk/protocol/constant"
 	"github.com/openimsdk/protocol/msg"
@@ -131,8 +132,11 @@ func (m *msgServer) messageVerification(ctx context.Context, data *msg.SendMsgRe
 	}
 }
 
+// encapsulateMsgData 在按 SessionType 分发之前执行。单聊、群聊和通知都会先经过这里。
 func (m *msgServer) encapsulateMsgData(msg *sdkws.MsgData) {
+	// 服务端消息 ID 每次都重新生成，由发送方 ID、当前时间和随机数做 MD5。
 	msg.ServerMsgID = GetMsgID(msg.SendID)
+	// 调用方已经填了发送时间就保留，没填才写成当前毫秒时间。
 	if msg.SendTime == 0 {
 		msg.SendTime = timeutil.GetCurrentTimestampByMill()
 	}
@@ -158,15 +162,20 @@ func (m *msgServer) encapsulateMsgData(msg *sdkws.MsgData) {
 	case constant.Custom:
 		fallthrough
 	case constant.Quote:
+		// 普通消息不改开关。
 	case constant.Revoke:
-		datautil.SetSwitchFromOptions(msg.Options, constant.IsUnreadCount, false)
-		datautil.SetSwitchFromOptions(msg.Options, constant.IsOfflinePush, false)
+		// 撤回不增加未读，也不做离线推送。
+		// msg.Options 是 map[string]bool 是开关表
+		datautil.SetSwitchFromOptions(msg.Options, constant.IsUnreadCount, false) // 不计入未读
+		datautil.SetSwitchFromOptions(msg.Options, constant.IsOfflinePush, false) // 不计入离线推送
 	case constant.HasReadReceipt:
-		datautil.SetSwitchFromOptions(msg.Options, constant.IsConversationUpdate, false)
+		// 已读回执同样不增加未读、不做离线推送，也不更新会话。
+		datautil.SetSwitchFromOptions(msg.Options, constant.IsConversationUpdate, false) // 
 		datautil.SetSwitchFromOptions(msg.Options, constant.IsSenderConversationUpdate, false)
 		datautil.SetSwitchFromOptions(msg.Options, constant.IsUnreadCount, false)
 		datautil.SetSwitchFromOptions(msg.Options, constant.IsOfflinePush, false)
 	case constant.Typing:
+		// 正在输入只需要实时送达，不入库、不同步多端、不更新会话。
 		datautil.SetSwitchFromOptions(msg.Options, constant.IsHistory, false)
 		datautil.SetSwitchFromOptions(msg.Options, constant.IsPersistent, false)
 		datautil.SetSwitchFromOptions(msg.Options, constant.IsSenderSync, false)
@@ -182,22 +191,29 @@ func GetMsgID(sendID string) string {
 	return encrypt.Md5(t + "-" + sendID + "-" + strconv.Itoa(rand.Int()))
 }
 
+// modifyMessageByUserMessageReceiveOpt 只处理普通单聊。userID 是接收方。
+// 返回的 bool 就是调用方的 isSend：true 继续入队，false 表示接收方拒收。
 func (m *msgServer) modifyMessageByUserMessageReceiveOpt(ctx context.Context, userID, conversationID string, sessionType int, pb *msg.SendMsgReq) (bool, error) {
+	// 先看接收方的全局接收设置：0 正常接收，1 不接收，2 接收但不提醒。
 	opt, err := m.UserLocalCache.GetUserGlobalMsgRecvOpt(ctx, userID)
 	if err != nil {
 		return false, err
 	}
 	switch opt {
 	case constant.ReceiveMessage:
+		// 全局正常接收，继续看这个单聊会话自己的设置。
 	case constant.NotReceiveMessage:
+		// 全局拒收，消息不入队。
 		return false, nil
 	case constant.ReceiveNotNotifyMessage:
+		// 全局免打扰：消息仍发送，但关掉离线推送，不再看会话设置。
 		if pb.MsgData.Options == nil {
 			pb.MsgData.Options = make(map[string]bool, 10)
 		}
 		datautil.SetSwitchFromOptions(pb.MsgData.Options, constant.IsOfflinePush, false)
 		return true, nil
 	}
+	// 这一对用户的单聊会话设置。没有单独设置过就按正常接收。
 	singleOpt, err := m.ConversationLocalCache.GetSingleConversationRecvMsgOpt(ctx, userID, conversationID)
 	if errs.ErrRecordNotFound.Is(err) {
 		return true, nil
@@ -208,11 +224,13 @@ func (m *msgServer) modifyMessageByUserMessageReceiveOpt(ctx context.Context, us
 	case constant.ReceiveMessage:
 		return true, nil
 	case constant.NotReceiveMessage:
+		// 会话拒收时，已读回执仍然发送，其他消息不入队。
 		if datautil.Contain(int(pb.MsgData.ContentType), ExcludeContentType...) {
 			return true, nil
 		}
 		return false, nil
 	case constant.ReceiveNotNotifyMessage:
+		// 这个会话免打扰：消息仍发送，关掉离线推送。
 		if pb.MsgData.Options == nil {
 			pb.MsgData.Options = make(map[string]bool, 10)
 		}

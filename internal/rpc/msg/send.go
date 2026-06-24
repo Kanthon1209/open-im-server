@@ -31,8 +31,10 @@ import (
 	"github.com/openimsdk/tools/utils/datautil"
 )
 
+// SendMsg 会根据 MsgData 中的 SessionType 将 MsgData 分发给不同的函数继续往下走
 func (m *msgServer) SendMsg(ctx context.Context, req *pbmsg.SendMsgReq) (*pbmsg.SendMsgResp, error) {
 	if req.MsgData != nil {
+		// 分发前补全服务端字段，并按 ContentType 调整发送开关。
 		m.encapsulateMsgData(req.MsgData)
 		switch req.MsgData.SessionType {
 		case constant.SingleChatType:
@@ -48,12 +50,15 @@ func (m *msgServer) SendMsg(ctx context.Context, req *pbmsg.SendMsgReq) (*pbmsg.
 	return nil, errs.ErrArgs.WrapMsg("msgData is nil")
 }
 
+// 这里是 rpc server 端的实现逻辑
+// 1003
 func (m *msgServer) sendMsgGroupChat(ctx context.Context, req *pbmsg.SendMsgReq) (resp *pbmsg.SendMsgResp, err error) {
+	// 这里 msgServer 作为 rpc-msg server 的实现, 其实没有被要求实现 sendMsgGroupChat 方法
+	// sendMsgGroupChat 方法是作为实现接口的依赖方法
 	if err = m.messageVerification(ctx, req); err != nil {
 		prommetrics.GroupChatMsgProcessFailedCounter.Inc()
 		return nil, err
 	}
-
 	if err = m.webhookBeforeSendGroupMsg(ctx, &m.config.WebhooksConfig.BeforeSendGroupMsg, req); err != nil {
 		return nil, err
 	}
@@ -153,15 +158,20 @@ func (m *msgServer) sendMsgNotification(ctx context.Context, req *pbmsg.SendMsgR
 }
 
 func (m *msgServer) sendMsgSingleChat(ctx context.Context, req *pbmsg.SendMsgReq) (resp *pbmsg.SendMsgResp, err error) {
+	// 管理员和通知类 ContentType 在这里直接通过；普通消息会检查黑名单，并在开启好友验证时检查好友关系。
 	if err := m.messageVerification(ctx, req); err != nil {
 		return nil, err
 	}
 	isSend := true
+	// isNotNotification 缺省或为 true 时是普通消息；服务端明确写成 false 时才是通知。
 	isNotification := msgprocessor.IsNotificationByMsg(req.MsgData)
-	if !isNotification {
+	// 通知不受接收方「不接收 / 免打扰」设置影响。
+	if !isNotification { // 如果不是通知
+		// 不接收时 isSend 为 false；接收但不提醒时仍发送，只是关掉离线推送。
 		isSend, err = m.modifyMessageByUserMessageReceiveOpt(
 			ctx,
 			req.MsgData.RecvID,
+			// 生成单人对话的 conversationID
 			conversationutil.GenConversationIDForSingle(req.MsgData.SendID, req.MsgData.RecvID),
 			constant.SingleChatType,
 			req,
@@ -170,18 +180,22 @@ func (m *msgServer) sendMsgSingleChat(ctx context.Context, req *pbmsg.SendMsgReq
 			return nil, err
 		}
 	}
+	// 接收方拒收。没有错误码，调用方看到的是成功，但这条消息不会入队。
 	if !isSend {
 		prommetrics.SingleChatMsgProcessFailedCounter.Inc()
 		return nil, nil
 	} else {
+		// 业务回调可以改消息；回调失败则中断，消息不会入队。
 		if err := m.webhookBeforeMsgModify(ctx, &m.config.WebhooksConfig.BeforeMsgModify, req); err != nil {
 			return nil, err
 		}
 
+		// 按单聊双方生成队列键。Seq 还没分配，由后续消费流程写入。
 		if err := m.MsgDatabase.MsgToMQ(ctx, conversationutil.GenConversationUniqueKeyForSingle(req.MsgData.SendID, req.MsgData.RecvID), req.MsgData); err != nil {
 			prommetrics.SingleChatMsgProcessFailedCounter.Inc()
 			return nil, err
 		}
+		// 消息已经入队，这里的回调失败不再影响发送结果。
 		m.webhookAfterSendSingleMsg(ctx, &m.config.WebhooksConfig.AfterSendSingleMsg, req)
 		prommetrics.SingleChatMsgProcessSuccessCounter.Inc()
 		return &pbmsg.SendMsgResp{

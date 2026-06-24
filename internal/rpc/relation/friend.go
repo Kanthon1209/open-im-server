@@ -70,6 +70,7 @@ type Config struct {
 
 func Start(ctx context.Context, config *Config, client discovery.SvcDiscoveryRegistry, server *grpc.Server) error {
 	mgocli, err := mongoutil.NewMongoDB(ctx, config.MongodbConfig.Build())
+	//  获取 mongo DB Client
 	if err != nil {
 		return err
 	}
