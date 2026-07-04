@@ -70,6 +70,7 @@ type Config struct {
 }
 
 func Start(ctx context.Context, index int, config *Config) error {
+	// 依赖 Config 启动 msgtransfer 实例
 
 	log.CInfo(ctx, "MSG-TRANSFER server is initializing", "prometheusPorts",
 		config.MsgTransfer.Prometheus.Ports, "index", index)
@@ -104,10 +105,14 @@ func Start(ctx context.Context, index int, config *Config) error {
 		return err
 	}
 	seqUserCache := redis.NewSeqUserCacheRedis(rdb, seqUser)
+	// msgtransfer 服务的 controller 层 Database, 向上层
 	msgTransferDatabase, err := controller.NewMsgTransferDatabase(msgDocModel, msgModel, seqUserCache, seqConversationCache, &config.KafkaConfig)
 	if err != nil {
 		return err
 	}
+	// history ConsumerHandler
+	// 专门用来处理 ToRedis 的
+	// Batcher 的 do 方法也是在构建 ConsumerHandler 的时候进行定义
 	historyCH, err := NewOnlineHistoryRedisConsumerHandler(ctx, client, config, msgTransferDatabase)
 	if err != nil {
 		return err
@@ -118,10 +123,13 @@ func Start(ctx context.Context, index int, config *Config) error {
 	}
 
 	msgTransfer := &MsgTransfer{
-		historyCH:      historyCH,
+		historyCH:      historyCH, // 是封装消费 ToRedis Topic ConsumerGroup 的 ConsumerHandler
 		historyMongoCH: historyMongoCH,
 	}
-	return msgTransfer.Start(index, config)
+	return msgTransfer.Start(index, config) // ConsumerHandler 也只是写好了 ConsumeClaim
+	// 把消费的 消息放到 Batcher 中
+	// Batcher 会有一个单独的 goroutine 去跑主逻辑
+	// Batcher 会被 ConsumerHandler 持有
 }
 
 func (m *MsgTransfer) Start(index int, cfg *Config) error {
@@ -131,10 +139,32 @@ func (m *MsgTransfer) Start(index int, cfg *Config) error {
 		netErr  error
 	)
 
+	// 三个 消费者 goroutine 绑定 Handler, 并开启消费循环
+	// 用 msgtransfer 组件的 ToRedisTopicConsumerHandler 的 RegisterHandleAndConsumer 方法
+	// 单独一个 goroutine,
+
+	// 这些 业务特有的 ConsumerHandler, 都是 内有组合一个 MConsumerGroup
+	// MConsumerGroup 内嵌的 ConsumerGroup, 方法提升得到 ConsumerGroup 的方法, Consume 等等
+	// MConsumerGroup 在基础上提供了 RegisterHandleAndConsumer
+	// 将对应的 Topic 的 ConsumerGroup 和对应的 handler 绑定到一起
+	// 有意思的是, 这里, 业务 specific 的 ConsumerHandler 就是 ConsumerGroup.Consume() 方法中 要求的 ConsumerGroupHandler 接口的实现者
+	// 而这个 ConsumerHandler 还组合 内嵌了 sarama.ConsumerGroup 的 MConsumerGroup,
+	// 内嵌的实例的方法的参数是自己... 这样在逻辑上其实有点乱
+	// 总之, 业务 specific 的 ConsumerHandler 实现了 ConsumerGroupHandler 要求的三个方法进行了实现
 	go m.historyCH.historyConsumerGroup.RegisterHandleAndConsumer(m.ctx, m.historyCH)
+	// 启动 消费循环, ConsumeClaim 中只是不断把
 	go m.historyMongoCH.historyConsumerGroup.RegisterHandleAndConsumer(m.ctx, m.historyMongoCH)
+
 	go m.historyCH.HandleUserHasReadSeqMessages(m.ctx)
-	err := m.historyCH.redisMessageBatches.Start()
+	// 这个又是在干什么
+
+	// 总的来说, Batcher.Start() 会检查 sharding 函数, Key 函数, 处理函数有没有设置好
+	// 然后启动各个 Worker, 用 Batcher.WaitGroup
+	// 各个 Worker 以 goroutine 方式启动
+	// ** 在这里, 启动 Batcher 
+	err := m.historyCH.redisMessageBatches.Start() // ConsumerGroup.Consume()
+	// 只是不断把 ConsumerClaim 中消费的消息放到 Batcher 中
+	// Batcher 需要启动一个消费循环处理
 	if err != nil {
 		return err
 	}

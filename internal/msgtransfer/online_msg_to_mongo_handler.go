@@ -51,6 +51,7 @@ func NewOnlineHistoryMongoConsumerHandler(kafkaConf *config.Kafka, database cont
 }
 
 func (mc *OnlineHistoryMongoConsumerHandler) handleChatWs2Mongo(ctx context.Context, cMsg *sarama.ConsumerMessage, key string, session sarama.ConsumerGroupSession) {
+	// 处理
 	msg := cMsg.Value
 	msgFromMQ := pbmsg.MsgDataToMongoByMQ{}
 	err := proto.Unmarshal(msg, &msgFromMQ)
@@ -63,6 +64,8 @@ func (mc *OnlineHistoryMongoConsumerHandler) handleChatWs2Mongo(ctx context.Cont
 		return
 	}
 	log.ZDebug(ctx, "mongo consumer recv msg", "msgs", msgFromMQ.String())
+	// 调用 controller 层的 msgTransferDatabase 的 BatchInsertChat2DB 将批量的 msgs 落库
+	// 
 	err = mc.msgTransferDatabase.BatchInsertChat2DB(ctx, msgFromMQ.ConversationID, msgFromMQ.MsgData, msgFromMQ.LastSeq)
 	if err != nil {
 		log.ZError(
@@ -93,14 +96,21 @@ func (mc *OnlineHistoryMongoConsumerHandler) handleChatWs2Mongo(ctx context.Cont
 
 func (*OnlineHistoryMongoConsumerHandler) Setup(_ sarama.ConsumerGroupSession) error { return nil }
 
+// 因为用不到这个函数, 用不到 OnlineHistoryMongoConsumerHandler, 所以没有给 接收者变量写名字
+// 没有给函数参数写名字, 只写了一个占位符, 需要实现这个方法, 要不然实现不了接口
 func (*OnlineHistoryMongoConsumerHandler) Cleanup(_ sarama.ConsumerGroupSession) error { return nil }
 
 func (mc *OnlineHistoryMongoConsumerHandler) ConsumeClaim(sess sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error { // an instance in the consumer group
+	// 实现 ConsumerGroupHandler 方法
+	// 这是一个回调函数, Consume 方法中会调用, claim.Messages() 是 channel
+	// 从 partition leader replica 所在 broker 源源不断 Fetch 过来的消息
+	// 放到 sarama.ConsumerGroupClaim.Messages() 中
 	log.ZDebug(context.Background(), "online new session msg come", "highWaterMarkOffset",
 		claim.HighWaterMarkOffset(), "topic", claim.Topic(), "partition", claim.Partition())
 	for msg := range claim.Messages() {
 		ctx := mc.historyConsumerGroup.GetContextFromMsg(msg)
 		if len(msg.Value) != 0 {
+			// 消费 ToRedis Topic 消息, 到
 			mc.handleChatWs2Mongo(ctx, msg, string(msg.Key), sess)
 		} else {
 			log.ZError(ctx, "mongo msg get from kafka but is nil", nil, "conversationID", msg.Key)
