@@ -15,10 +15,11 @@
 package prommetrics
 
 import (
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
 	"net"
 	"net/http"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
 const commonPath = "/metrics"
@@ -31,7 +32,9 @@ var (
 )
 
 func Init(registry *prometheus.Registry, listener net.Listener, path string, handler http.Handler, cs ...prometheus.Collector) error {
+	// 将所有的 Collector 注册进 prom registry
 	registry.MustRegister(cs...)
+	// 把 handler 和 http.ServeMux 绑定, 这个是专门用来实现路径到handler映射的
 	srv := http.NewServeMux()
 	srv.Handle(path, handler)
 	return http.Serve(listener, srv)

@@ -28,16 +28,27 @@ import (
 	"github.com/openimsdk/tools/mcontext"
 	"github.com/openimsdk/tools/utils/datautil"
 	"github.com/openimsdk/tools/utils/jsonutil"
-	"github.com/openimsdk/tools/utils/timeutil"
 	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
 type ConsumerHandler struct {
-	pushConsumerGroup      *kafka.MConsumerGroup
-	offlinePusher          offlinepush.OfflinePusher
-	onlinePusher           OnlinePusher
+	pushConsumerGroup *kafka.MConsumerGroup // 内嵌一个 sarama.ConsumerGroup
+	// 这是 push 服务的 kafka 消费处理对象
+	// 内 pushConsumerGroup 是一个 MConsumerGroup 对象
+	// 用来讲 ConsumerHandler 和 sarama.ConsumerGroup.Consume() 方法进行绑定
+
+	// 下面依赖一堆这个消费实例需要依赖的实例
+	offlinePusher offlinepush.OfflinePusher
+
+	// 这个 OnlinePusher 也是有意思, 这个 ConsumerHandler 属于是 push 服务中核心的 ConsumerHandler
+	// 消费 ToPush Topic 并进行下游业务逻辑的时候
+	onlinePusher OnlinePusher // 专门用来 获取 msggateway 连接并进行推送的
+
+	// push 服务在 controller 层的 Database 接口
 	pushDatabase           controller.PushDatabase
+
+	// 
 	onlineCache            *rpccache.OnlineCache
 	groupLocalCache        *rpccache.GroupLocalCache
 	conversationLocalCache *rpccache.ConversationLocalCache
@@ -49,15 +60,40 @@ type ConsumerHandler struct {
 	conversationClient     *rpcli.ConversationClient
 }
 
-func NewConsumerHandler(ctx context.Context, config *Config, database controller.PushDatabase, offlinePusher offlinepush.OfflinePusher, rdb redis.UniversalClient,
+// 看看这个 Handler 都是什么逻辑
+// 核心的业务逻辑都绑定在 这个 ConsumerHandler 上, 并非 sarama 的
+// 1. 创建 MConsumerGroup: 内嵌了 sarama.ConsumerGroup, 方法提升得到 Consume 等方法
+//   - 内嵌是为了在外层额外提供方法, 将 Handler 和 sarama.ConsumerGroup 绑定到一起
+//   - 方便 sarama.Consume 的时候直接用这个组合体中已经组合的 handler, 调用 组合体的注册方法, 方便
+func NewConsumerHandler(ctx context.Context,
+	config *Config,
+	database controller.PushDatabase,
+	offlinePusher offlinepush.OfflinePusher,
+	rdb redis.UniversalClient,
 	client discovery.SvcDiscoveryRegistry) (*ConsumerHandler, error) {
 	var consumerHandler ConsumerHandler
 	var err error
+	// 为什么把 sarama.ConsumerGroup 包装在 ConsumerHandler 中?
+	// 为的是 将 sarama.ConsumerGroupHandler 和 ConsumerGroup 绑定到一起
+	// 这个 MConsumerGroup 内嵌的 sarama.ConsumerGroup 才是
+
+	// ConsumerHandler 的 MGroupHandler 内嵌一个 ToPush Topic 的 sarama.ConsumerGroup
 	consumerHandler.pushConsumerGroup, err = kafka.NewMConsumerGroup(config.KafkaConfig.Build(), config.KafkaConfig.ToPushGroupID,
 		[]string{config.KafkaConfig.ToPushTopic}, true)
 	if err != nil {
 		return nil, err
 	}
+	// 通过 服务发现 client 拿到各个依赖的 grpc 服务的 连接: grpc.ClientConnInterface
+	// 实现是 grpc.ClientConn, 底层是 HTTP 2.0 , 建立在 net.Conn 接口的实现: net.TCPConn
+	// epoll: event poll, poll: 轮询
+	// net.FD -> 非阻塞 IO, netpoller, epoll, 红黑树, 队列, epoll_wait, epitem
+	// 在此基础上建立 HTTP 2.0 连接, 和目标 node 中的 pod 中的 container 中的 进程
+	// 和 各个 rpc 服务建立连接
+	// 	* rpc-user
+	//	* rpc-group
+	// 	* rpc-msg
+	//	* rpc-conversation
+
 	userConn, err := client.GetConn(ctx, config.Share.RpcRegisterName.User)
 	if err != nil {
 		return nil, err
@@ -74,12 +110,15 @@ func NewConsumerHandler(ctx context.Context, config *Config, database controller
 	if err != nil {
 		return nil, err
 	}
+
+	//
 	consumerHandler.userClient = rpcli.NewUserClient(userConn)
 	consumerHandler.groupClient = rpcli.NewGroupClient(groupConn)
 	consumerHandler.msgClient = rpcli.NewMsgClient(msgConn)
 	consumerHandler.conversationClient = rpcli.NewConversationClient(conversationConn)
 
 	consumerHandler.offlinePusher = offlinePusher
+	// 创建一个 OnlinePusher, 给 pushUserIDs 发送到这些 IDs
 	consumerHandler.onlinePusher = NewOnlinePusher(client, config)
 	consumerHandler.groupLocalCache = rpccache.NewGroupLocalCache(consumerHandler.groupClient, &config.LocalCacheConfig, rdb)
 	consumerHandler.conversationLocalCache = rpccache.NewConversationLocalCache(consumerHandler.conversationClient, &config.LocalCacheConfig, rdb)
@@ -94,32 +133,40 @@ func NewConsumerHandler(ctx context.Context, config *Config, database controller
 }
 
 func (c *ConsumerHandler) handleMs2PsChat(ctx context.Context, msg []byte) {
+	// 将从 MQ 中拿到的 []byte unmarshal 到 pbpush.PushMsgReq 中
 	msgFromMQ := pbpush.PushMsgReq{}
+	// 将 从 MQ 拿到的 []byte unmashal 到 结构体
 	if err := proto.Unmarshal(msg, &msgFromMQ); err != nil {
 		log.ZError(ctx, "push Unmarshal msg err", err, "msg", string(msg))
 		return
 	}
 
+	// 从 msg 拿出来 SendTime 秒数
 	sec := msgFromMQ.MsgData.SendTime / 1000
-	nowSec := timeutil.GetCurrentTimestampBySecond()
+	nowSec := time.Now().Unix() // 这样不就好了
+	// nowSec := timeutil.GetCurrentTimestampBySecond()
 
+	// 判断一下
 	if nowSec-sec > 10 {
-		prommetrics.MsgLoneTimePushCounter.Inc()
+		prommetrics.MsgLoneTimePushCounter.Inc() // 统计过长时间到达 handle 函数的数量
 		log.ZWarn(ctx, "it’s been a while since the message was sent", nil, "msg", msgFromMQ.String(), "sec", sec, "nowSec", nowSec, "nowSec-sec", nowSec-sec)
 	}
 	var err error
 
 	switch msgFromMQ.MsgData.SessionType {
+	// 从 MsgData.SessionType 中判断一下
 	case constant.ReadGroupChatType:
 		err = c.Push2Group(ctx, msgFromMQ.MsgData.GroupID, msgFromMQ.MsgData)
 	default:
 		var pushUserIDList []string
 		isSenderSync := datautil.GetSwitchFromOptions(msgFromMQ.MsgData.Options, constant.IsSenderSync)
+		// 判断一下要不要同步发给自己
 		if !isSenderSync || msgFromMQ.MsgData.SendID == msgFromMQ.MsgData.RecvID {
 			pushUserIDList = append(pushUserIDList, msgFromMQ.MsgData.RecvID)
-		} else {
+		} else { // 就是要进行 sender sync, 那么就往 pushUserIDList 放上发送者的 ID
 			pushUserIDList = append(pushUserIDList, msgFromMQ.MsgData.RecvID, msgFromMQ.MsgData.SendID)
 		}
+		// pushUserIDList 中存放所有推送的
 		err = c.Push2User(ctx, pushUserIDList, msgFromMQ.MsgData)
 	}
 	if err != nil {
@@ -131,18 +178,30 @@ func (*ConsumerHandler) Setup(sarama.ConsumerGroupSession) error { return nil }
 
 func (*ConsumerHandler) Cleanup(sarama.ConsumerGroupSession) error { return nil }
 
+// 实现 ConsumerGroupHandler
+// sarama 对每一个分区启动一个 goroutine, 每一个调用 ConsumeClaim
+// 实现了 GroupConsumerHandler 接口
 func (c *ConsumerHandler) ConsumeClaim(sess sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	// 通过 claimMessages() 可以获得 一个 channel, 读循环获取的 msg 会不断塞入这个 channel
+	// Consume 方法跑的是一次消费组会话
+	// 这个 channel 就是 sarama.ConsumerGroupClaim.Messages()
+	// ConsumeClaim 是会话建好、分区分下来之后，Sarama 为每个分到的分区起的读循环
+	// 都循环读取的内容不断放到 sarama.ConsumerGroupClaim.Messages() 这个 channel 中
 	c.onlineCache.Lock.Lock()
 	for c.onlineCache.CurrentPhase.Load() < rpccache.DoSubscribeOver {
 		c.onlineCache.Cond.Wait()
 	}
+	// ConsumeClaim：负责这一个分区。消息通道由 Sarama 填充，读和处理要写在这个方法里。
 	c.onlineCache.Lock.Unlock()
 	ctx := mcontext.SetOperationID(context.TODO(), strconv.FormatInt(time.Now().UnixNano()+int64(rand.Uint32()), 10))
 	log.ZInfo(ctx, "begin consume messages")
 
+	// claim.Messages
 	for msg := range claim.Messages() {
 		ctx := c.pushConsumerGroup.GetContextFromMsg(msg)
 		ctx = mcontext.WithOpUserIDContext(ctx, c.config.Share.IMAdminUserID[0])
+		// ConsumerHandler 上绑定 handlerMsg2PsChat 处理这个 msg
+		// msg.Value 是 msg 对应的二进制内容,
 		c.handleMs2PsChat(ctx, msg.Value)
 		sess.MarkMessage(msg, "")
 	}
@@ -156,10 +215,13 @@ func (c *ConsumerHandler) Push2User(ctx context.Context, userIDs []string, msg *
 		t := time.Since(duration)
 		log.ZInfo(ctx, "Get msg from msg_transfer And push msg end", "msg", msg.String(), "time cost", t)
 	}(time.Now())
+	// 定义一个函数, 用来计算耗时多久
+	// 在 OnlinePush 前调用 webhook
 	if err := c.webhookBeforeOnlinePush(ctx, &c.config.WebhooksConfig.BeforeOnlinePush, userIDs, msg); err != nil {
 		return err
 	}
 
+	//
 	wsResults, err := c.GetConnsAndOnlinePush(ctx, msg, userIDs)
 	if err != nil {
 		return err
@@ -222,6 +284,7 @@ func (c *ConsumerHandler) GetConnsAndOnlinePush(ctx context.Context, msg *sdkws.
 	if msg != nil && msg.Status == constant.MsgStatusSending {
 		msg.Status = constant.MsgStatusSendSuccess
 	}
+	// 从 onlineCache 中看我们发送目标的 slice 中哪些在线, 哪些离线
 	onlineUserIDs, offlineUserIDs, err := c.onlineCache.GetUsersOnline(ctx, pushToUserIDs)
 	if err != nil {
 		return nil, err
@@ -229,8 +292,11 @@ func (c *ConsumerHandler) GetConnsAndOnlinePush(ctx context.Context, msg *sdkws.
 
 	log.ZDebug(ctx, "GetConnsAndOnlinePush online cache", "sendID", msg.SendID, "recvID", msg.RecvID, "groupID", msg.GroupID, "sessionType", msg.SessionType, "clientMsgID", msg.ClientMsgID, "serverMsgID", msg.ServerMsgID, "offlineUserIDs", offlineUserIDs, "onlineUserIDs", onlineUserIDs)
 	var result []*msggateway.SingleMsgToUserResults
+	// 如果 有目标用户在线
 	if len(onlineUserIDs) > 0 {
 		var err error
+		// onlinePusher 会去获取目标所在的 msggateway 的 hubserver 的 连接
+		//
 		result, err = c.onlinePusher.GetConnsAndOnlinePush(ctx, msg, onlineUserIDs)
 		if err != nil {
 			return nil, err
