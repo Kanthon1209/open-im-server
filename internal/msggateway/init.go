@@ -59,7 +59,9 @@ func Start(ctx context.Context, index int, conf *Config) error {
 		longServer.online, err = rpccache.NewOnlineCache(srv.userClient, nil, rdb, false, longServer.subscriberUserOnlineStatusChanges)
 		return err
 	})
-
+	// 帅啊, 启动一个协程, 专门用来处理 Register / UnRegister 附带的
+	// push status 
+	// 启动 4 个 worker
 	go longServer.ChangeOnlineStatus(4)
 
 	netDone := make(chan error)

@@ -48,7 +48,7 @@ type LongConnServer interface {
 }
 
 type WsServer struct {
-	websocket         *websocket.Upgrader
+	websocket         *websocket.Upgrader // 用来给 net.Conn 升级成为 websocket.Conn 的
 	msgGatewayConfig  *Config
 	port              int
 	wsMaxConnNum      int64
@@ -271,7 +271,7 @@ func (ws *WsServer) registerClient(client *Client) {
 	if !userOK {
 		ws.clients.Set(client.UserID, client)
 		log.ZDebug(client.ctx, "user not exist", "userID", client.UserID, "platformID", client.PlatformID)
-		prommetrics.OnlineUserGauge.Add(1)
+		prommetrics.OnlineUserGauge.Add(1) // 给 prom 指标增加
 		ws.onlineUserNum.Add(1)
 		ws.onlineUserConnNum.Add(1)
 	} else {

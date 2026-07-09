@@ -24,6 +24,10 @@ type AuthApi struct {
 	Client auth.AuthClient
 }
 
+// 因为 AuthApi 服务其实底层调用的是 rpc-auth server 端提供的 grpc 调用
+// 所以这里组合了 auth.AuthClient, 这个 是 protoc-gen-go ... 等插件生成的 rpc-auth-client
+// 基于这个基础, 去给 AuthApi 的一些方法的实现提供了基础
+
 func NewAuthApi(client auth.AuthClient) AuthApi {
 	return AuthApi{client}
 }

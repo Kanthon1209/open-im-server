@@ -192,7 +192,7 @@ func newGinRouter(ctx context.Context, client discovery.SvcDiscoveryRegistry, co
 	{
 		a := NewAuthApi(pbAuth.NewAuthClient(authConn))
 		authRouterGroup := r.Group("/auth")
-		authRouterGroup.POST("/get_admin_token", a.GetAdminToken)
+		authRouterGroup.POST("/get_admin_token", a.GetAdminToken) // 其实就是在做映射工作, 将 HTTP -> grpc
 		authRouterGroup.POST("/get_user_token", a.GetUserToken)
 		authRouterGroup.POST("/parse_token", a.ParseToken)
 		authRouterGroup.POST("/force_logout", a.ForceLogout)
