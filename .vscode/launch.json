@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach msg rpc",
+            "type": "go",
+            "request": "attach",
+            "mode": "remote",
+            "host": "127.0.0.1",
+            "port": 2345,
+            "apiVersion": 2,
+            "substitutePath": [
+                {
+                    "from": "D:\\go-project\\open-im-server-3.8.3-patch.18",
+                    "to": "D:/go-project/open-im-server-3.8.3-patch.18"
+                }
+            ]
+        }
+    ]
+}

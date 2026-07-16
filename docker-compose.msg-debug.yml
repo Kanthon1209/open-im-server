@@ -1,0 +1,13 @@
+services:
+  openim-rpc-msg:
+    image: openim-rpc-msg:debug
+    build:
+      context: .
+      dockerfile: build/images/openim-server/Dockerfile.msg-debug
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - apparmor:unconfined
+    ports:
+      - "2345:2345"
+    entrypoint: ["dlv", "exec", "/openim-server/_output/openim-rpc-msg", "--listen=:2345", "--headless=true", "--api-version=2", "--accept-multiclient", "--continue", "--"]

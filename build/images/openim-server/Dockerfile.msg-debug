@@ -1,0 +1,23 @@
+FROM golang:1.25-alpine AS builder
+
+ENV SERVER_DIR=/openim-server
+WORKDIR $SERVER_DIR
+
+COPY . .
+RUN go mod tidy
+RUN CGO_ENABLED=0 go build -o _output/openim-rpc-msg ./cmd/openim-rpc/openim-rpc-msg
+RUN CGO_ENABLED=0 go install github.com/go-delve/delve/cmd/dlv@latest
+
+FROM alpine:latest
+
+RUN apk add --no-cache bash ca-certificates
+
+ENV SERVER_DIR=/openim-server
+WORKDIR $SERVER_DIR
+
+COPY --from=builder /openim-server/_output/openim-rpc-msg /openim-server/_output/openim-rpc-msg
+COPY --from=builder /go/bin/dlv /usr/local/bin/dlv
+
+EXPOSE 2345
+
+ENTRYPOINT ["dlv", "exec", "/openim-server/_output/openim-rpc-msg", "--listen=:2345", "--headless=true", "--api-version=2", "--accept-multiclient", "--continue", "--"]
